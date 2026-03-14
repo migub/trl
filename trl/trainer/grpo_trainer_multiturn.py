@@ -212,7 +212,6 @@ class MultiTurnGRPOTrainer(_BaseTrainer):
         self.reward_processing_classes = reward_processing_classes
 
         # ---- Training arguments ----
-        self.max_prompt_length = args.max_prompt_length
         self.max_completion_length = args.max_completion_length
         self.num_generations = args.num_generations  # G in GRPO
         self.temperature = args.temperature
