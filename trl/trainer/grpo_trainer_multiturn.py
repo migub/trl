@@ -235,7 +235,8 @@ class MultiTurnGRPOTrainer(_BaseTrainer):
         self._step = 0
         self._buffered_inputs = None
 
-        model.warnings_issued["estimate_tokens"] = True
+        if hasattr(model, "warnings_issued"):
+            model.warnings_issued["estimate_tokens"] = True
 
         # Metrics
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
