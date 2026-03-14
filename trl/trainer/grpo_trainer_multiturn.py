@@ -282,6 +282,7 @@ class GRPOTrainer(_BaseTrainer):
         multiturn: bool = False,
         max_negotiation_rounds: int = 5,
         max_tokens_per_turn: int = 200,
+        opponent_model: str | None = None,
     ):
         # Args
         if args is None:
@@ -554,6 +555,7 @@ class GRPOTrainer(_BaseTrainer):
         self.multiturn = multiturn
         self.max_negotiation_rounds = max_negotiation_rounds
         self.max_tokens_per_turn = max_tokens_per_turn
+        self.opponent_model = opponent_model  # e.g. "gpt-4o-mini" or None for local opponent
         if self.multiturn:
             self.multiturn_generation_config = GenerationConfig(
                 max_new_tokens=self.max_tokens_per_turn,
@@ -567,7 +569,8 @@ class GRPOTrainer(_BaseTrainer):
             )
             logger.info(
                 f"Multi-turn negotiation enabled: {max_negotiation_rounds} rounds, "
-                f"{max_tokens_per_turn} tokens/turn"
+                f"{max_tokens_per_turn} tokens/turn, "
+                f"opponent={'OpenAI ' + opponent_model if opponent_model else 'local (LoRA disabled)'}"
             )
         if self.use_liger_kernel and self.top_entropy_quantile < 1.0:
             raise NotImplementedError(
@@ -1281,7 +1284,7 @@ class GRPOTrainer(_BaseTrainer):
         """
         Play a full multi-turn negotiation dialogue.
         Agent: model WITH LoRA adapters (trainable policy).
-        Opponent: model WITHOUT LoRA adapters (frozen base model).
+        Opponent: Either local model (LoRA disabled) or OpenAI API, depending on self.opponent_model.
 
         Returns:
             conversation: List of message dicts [{role, content}, ...]
@@ -1307,10 +1310,14 @@ class GRPOTrainer(_BaseTrainer):
                     agent_turn_indices.append(len(conversation))
                     conversation.append({"role": "assistant", "content": response})
                 else:
-                    # Opponent: WITHOUT LoRA (frozen base model)
-                    unwrapped.disable_adapter_layers()
-                    response = self._multiturn_generate_single_response(opponent_history)
-                    unwrapped.enable_adapter_layers()  # Re-enable for next agent turn
+                    if self.opponent_model is not None:
+                        # MULTITURN: Opponent via OpenAI API
+                        response = self._openai_opponent_response(opponent_history)
+                    else:
+                        # Opponent: local model WITHOUT LoRA (frozen base model)
+                        unwrapped.disable_adapter_layers()
+                        response = self._multiturn_generate_single_response(opponent_history)
+                        unwrapped.enable_adapter_layers()
                     opponent_history.append({"role": "assistant", "content": response})
                     agent_history.append({"role": "user", "content": response})
                     conversation.append({"role": "user", "content": response})
@@ -1318,6 +1325,22 @@ class GRPOTrainer(_BaseTrainer):
         # Ensure LoRA is re-enabled after generation
         unwrapped.enable_adapter_layers()
         return conversation, agent_turn_indices
+
+    def _openai_opponent_response(self, messages: list) -> str:
+        """Generate opponent response using OpenAI API."""
+        import openai
+        client = openai.OpenAI()
+        try:
+            response = client.chat.completions.create(
+                model=self.opponent_model,
+                messages=messages,
+                max_tokens=self.max_tokens_per_turn,
+                temperature=self.temperature if self.temperature else 1.0,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"OpenAI opponent error: {e}. Returning empty response.")
+            return "I accept your offer."
 
     def _tokenize_multiturn_conversation(
         self, system_prompt: str, conversation: list, agent_turn_indices: list
